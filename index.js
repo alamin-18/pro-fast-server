@@ -131,6 +131,40 @@ async function run() {
                     .send({ message: "Failed to update user role", error: error.message });
             }
         });
+        app.patch("/parcels/:id/assign", async (req, res) => {
+            const parcelId = req.params.id;
+            const { riderId, riderName, riderEmail } = req.body;
+
+            try {
+                // Update parcel
+                await parcelsCollection.updateOne(
+                    { _id: new ObjectId(parcelId) },
+                    {
+                        $set: {
+                            delivery_status: "rider_assigned",
+                            assigned_rider_id: riderId,
+                            assigned_rider_email: riderEmail,
+                            assigned_rider_name: riderName,
+                        },
+                    }
+                );
+
+                // Update rider
+                await ridersCollection.updateOne(
+                    { _id: new ObjectId(riderId) },
+                    {
+                        $set: {
+                            work_status: "in_delivery",
+                        },
+                    }
+                );
+
+                res.send({ message: "Rider assigned" });
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Failed to assign rider" });
+            }
+        });
         // Get all parcels
         app.get('/parcels', async (req, res) => {
             try {
@@ -339,6 +373,102 @@ async function run() {
                 res.status(500).send({ message: 'Failed to suspend rider' });
             }
         });
+        app.get("/riders/available", async (req, res) => {
+            const { district } = req.query;
+
+            try {
+                const riders = await ridersCollection
+                    .find({
+                        district,
+                        // status: { $in: ["approved", "active"] },
+                        // work_status: "available",
+                    })
+                    .toArray();
+
+                res.send(riders);
+            } catch (err) {
+                res.status(500).send({ message: "Failed to load riders" });
+            }
+        });
+        app.get('/rider/parcels', async (req, res) => {
+            try {
+                const email = req.query.email;
+
+                if (!email) {
+                    return res.status(400).send({ message: 'Rider email is required' });
+                }
+
+                const query = {
+                    assigned_rider_email: email,
+                    delivery_status: { $in: ['rider_assigned', 'in_transit'] },
+                };
+
+                const options = {
+                    sort: { creation_date: -1 }, // Newest first
+                };
+
+                const parcels = await parcelsCollection.find(query, options).toArray();
+                res.send(parcels);
+            } catch (error) {
+                console.error('Error fetching rider tasks:', error);
+                res.status(500).send({ message: 'Failed to get rider tasks' });
+            }
+        });
+        app.patch("/parcels/:id/status", async (req, res) => {
+            const parcelId = req.params.id;
+            const { status } = req.body;
+            const updatedDoc = {
+                delivery_status: status
+            }
+
+            if (status === 'in_transit') {
+                updatedDoc.picked_at = new Date().toISOString()
+            }
+            else if (status === 'delivered') {
+                updatedDoc.delivered_at = new Date().toISOString()
+            }
+
+            try {
+                const result = await parcelsCollection.updateOne(
+                    { _id: new ObjectId(parcelId) },
+                    {
+                        $set: updatedDoc
+                    }
+                );
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ message: "Failed to update status" });
+            }
+        });
+        app.get('/rider/completed-parcels', async (req, res) => {
+            try {
+                const email = req.query.email;
+
+                if (!email) {
+                    return res.status(400).send({ message: 'Rider email is required' });
+                }
+
+                const query = {
+                    assigned_rider_email: email,
+                    delivery_status: {
+                        $in: ['delivered', 'service_center_delivered']
+                    },
+                };
+
+                const options = {
+                    sort: { creation_date: -1 }, // Latest first
+                };
+
+                const completedParcels = await parcelsCollection.find(query, options).toArray();
+
+                res.send(completedParcels);
+
+            } catch (error) {
+                console.error('Error loading completed parcels:', error);
+                res.status(500).send({ message: 'Failed to load completed deliveries' });
+            }
+        });
+
 
         // Send a ping to confirm a successful connection
         await client.db("admin").command({ ping: 1 });
